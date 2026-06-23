@@ -1,0 +1,65 @@
+name: Build GeoIP SRS
+
+on:
+  schedule:
+    # 每天北京时间早上 6 点 50 分执行 (UTC 22:50，错开运行)
+    - cron: '50 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq curl
+          go install github.com/urlesistiana/v2dat@latest
+          LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+          VERSION=${LATEST_TAG#v}
+          curl -sSL "https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VERSION}-linux-amd64.tar.gz" | tar -xz
+          sudo cp sing-box-*/sing-box /usr/local/bin/
+
+      - name: Download & Compile GeoIP
+        run: |
+          mkdir -p tmp_ext srs_out
+          curl -L -O "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+          ~/go/bin/v2dat unpack geoip -o tmp_ext geoip.dat
+          
+          echo "开始全量编译 GeoIP..."
+          for file in tmp_ext/geoip_*.txt; do
+              tag=$(basename "$file" | sed 's/geoip_//;s/\.txt//')
+              
+              cat "$file" | jq -R -r -s '
+                split("\n") | 
+                map(select(. != "" and (startswith("#") | not))) |
+                map(split(" ")[0]) |
+                {
+                  version: 1,
+                  rules: [
+                    {
+                      ip_cidr: .
+                    }
+                  ]
+                }
+              ' > "tmp_ext/${tag}.json"
+              
+              sing-box rule-set compile "tmp_ext/${tag}.json" -o "srs_out/${tag}.srs"
+          done
+          echo "GeoIP 编译完成！"
+
+      - name: Deploy to geoip branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: geoip
+          publish_dir: ./srs_out
+          force_orphan: true
+          commit_message: "Auto-update GeoIP rules"

@@ -1,0 +1,70 @@
+name: Build Geosite SRS
+
+on:
+  schedule:
+    # 每天北京时间早上 6 点 40 分执行 (UTC 22:40)
+    - cron: '40 22 * * *'
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq curl
+          # 安装 v2dat
+          go install github.com/urlesistiana/v2dat@latest
+          # 获取最新版 sing-box 并安装
+          LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+          VERSION=${LATEST_TAG#v}
+          curl -sSL "https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VERSION}-linux-amd64.tar.gz" | tar -xz
+          sudo cp sing-box-*/sing-box /usr/local/bin/
+
+      - name: Download & Compile Geosite
+        run: |
+          mkdir -p tmp_ext srs_out
+          curl -L -O "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+          ~/go/bin/v2dat unpack geosite -o tmp_ext geosite.dat
+          
+          echo "开始全量编译 Geosite..."
+          for file in tmp_ext/geosite_*.txt; do
+              tag=$(basename "$file" | sed 's/geosite_//;s/\.txt//')
+              
+              cat "$file" | jq -R -r -s '
+                split("\n") | 
+                map(select(. != "" and (startswith("#") | not) and (startswith("@") | not))) |
+                map(split(" ")[0]) |
+                {
+                  version: 1,
+                  rules: [
+                    {
+                      domain: map(select(startswith("full:")) | sub("full:"; "")),
+                      domain_suffix: map(select((startswith("full:") or startswith("keyword:") or startswith("regexp:")) | not)),
+                      domain_keyword: map(select(startswith("keyword:")) | sub("keyword:"; "")),
+                      domain_regex: map(select(startswith("regexp:")) | sub("regexp:"; ""))
+                    } | with_entries(select(.value | length > 0))
+                  ]
+                }
+              ' > "tmp_ext/${tag}.json"
+              
+              sing-box rule-set compile "tmp_ext/${tag}.json" -o "srs_out/${tag}.srs"
+          done
+          echo "Geosite 编译完成！"
+
+      - name: Deploy to geosite branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: geosite
+          publish_dir: ./srs_out
+          force_orphan: true # 清空历史提交，防止仓库体积无限膨胀
+          commit_message: "Auto-update Geosite rules"
