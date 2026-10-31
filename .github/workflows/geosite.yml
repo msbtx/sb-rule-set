@@ -19,13 +19,15 @@ jobs:
           go-version: '1.21'
 
       - name: Install Tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sudo apt-get update && sudo apt-get install -y jq curl
           # 安装 v2dat
           go install github.com/urlesistiana/v2dat@latest
           # 获取最新版 sing-box 并安装
           set -euo pipefail
-          LATEST_TAG=$(curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -er '.tag_name')
+          LATEST_TAG=$(curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GITHUB_TOKEN}" https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -er '.tag_name')
           VERSION=${LATEST_TAG#v}
           echo "Installing sing-box ${LATEST_TAG}"
           curl -fL --retry 3 --retry-delay 5 --retry-all-errors -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${LATEST_TAG}/sing-box-${VERSION}-linux-amd64.tar.gz"
